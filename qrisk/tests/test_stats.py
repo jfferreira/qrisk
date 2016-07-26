@@ -168,6 +168,43 @@ class TestStats(TestCase):
             expected,
             DECIMAL_PLACES)
 
+    # Multiplying returns by a positive constant larger than 1 will increase
+    # the maximum drawdown by a factor greater than or equal to the constant.
+    # Similarly, a positive constant smaller than 1 will decrease maximum
+    # drawdown by at least the constant.
+    @parameterized.expand([
+        (noise_uniform, 1.1),
+        (noise, 2),
+        (noise_uniform, 10),
+        (noise_uniform, 0.99),
+        (noise, 0.5)
+    ])
+    def test_max_drawdown_transformation(self, returns, constant):
+        max_dd = qrisk.max_drawdown(returns)
+        transformed_dd = qrisk.max_drawdown(constant*returns)
+        if constant >= 1:
+            assert constant*max_dd <= transformed_dd
+        else:
+            assert constant*max_dd >= transformed_dd
+
+    # Translating returns by a positive constant should increase the maximum
+    # drawdown to a maximum of zero. Translating by a negative constant
+    # decreases the maximum drawdown.
+    @parameterized.expand([
+        (noise, .0001),
+        (noise, .001),
+        (noise_uniform, .01),
+        (noise_uniform, .1),
+    ])
+    def test_max_drawdown_translation(self, returns, constant):
+        depressed_returns = returns-constant
+        raised_returns = returns+constant
+        max_dd = qrisk.max_drawdown(returns)
+        depressed_dd = qrisk.max_drawdown(depressed_returns)
+        raised_dd = qrisk.max_drawdown(raised_returns)
+        assert max_dd <= raised_dd
+        assert depressed_dd <= max_dd
+
     @parameterized.expand([
         (mixed_returns, qrisk.DAILY, 1.9135925373194231),
         (weekly_returns, qrisk.WEEKLY, 0.24690830513998208),
@@ -569,6 +606,7 @@ class TestStats(TestCase):
             expected[1],
             DECIMAL_PLACES)
 
+    # Regression tests for alpha
     @parameterized.expand([
         (empty_returns, simple_benchmark, np.nan),
         (one_return, one_return, np.nan),
@@ -581,6 +619,93 @@ class TestStats(TestCase):
             qrisk.alpha(returns, benchmark),
             expected,
             DECIMAL_PLACES)
+
+    # Alpha/beta translation tests.
+    @parameterized.expand([
+        (0, .001),
+        (0.01, .001),
+    ])
+    def test_alphabeta_translation(self, mean_returns, translation):
+        # Generate correlated returns and benchmark.
+        std_returns = 0.01
+        correlation = 0.8
+        std_bench = .001
+        means = [mean_returns, .001]
+        covs = [[std_returns**2, std_returns*std_bench*correlation],
+                [std_returns*std_bench*correlation, std_bench**2]]
+        (ret, bench) = np.random.multivariate_normal(means, covs, 1000).T
+        returns = pd.Series(
+            ret,
+            index=pd.date_range('2000-1-30', periods=1000, freq='D'))
+        benchmark = pd.Series(
+            bench,
+            index=pd.date_range('2000-1-30', periods=1000, freq='D'))
+        # Translate returns and generate alphas and betas.
+        returns_depressed = returns-translation
+        returns_raised = returns+translation
+        (alpha_depressed, beta_depressed) = qrisk.alpha_beta(
+            returns_depressed, benchmark)
+        (alpha_standard, beta_standard) = qrisk.alpha_beta(
+            returns, benchmark)
+        (alpha_raised, beta_raised) = qrisk.alpha_beta(
+            returns_raised, benchmark)
+        # Alpha should change proportionally to how much returns were
+        # translated.
+        assert_almost_equal(
+            (alpha_standard - alpha_depressed)/252,
+            translation,
+            DECIMAL_PLACES)
+        assert_almost_equal(
+            (alpha_raised - alpha_standard)/252,
+            translation,
+            DECIMAL_PLACES)
+        # Beta remains constant.
+        assert_almost_equal(
+            beta_standard,
+            beta_depressed,
+            DECIMAL_PLACES)
+        assert_almost_equal(
+            beta_standard,
+            beta_raised,
+            DECIMAL_PLACES)
+
+    # Test alpha/beta with a smaller and larger correlation values.
+    @parameterized.expand([
+        (0.25, .75),
+        (.1, .9),
+        (.01, .03)
+    ])
+    def test_alphabeta_correlation(self, corr_less, corr_more):
+        mean_returns = 0.01
+        mean_bench = .001
+        std_returns = 0.01
+        std_bench = .001
+        index = pd.date_range('2000-1-30', periods=1000, freq='D')
+        # Generate less correlated returns
+        means_less = [mean_returns, mean_bench]
+        covs_less = [[std_returns**2, std_returns*std_bench*corr_less],
+                     [std_returns*std_bench*corr_less, std_bench**2]]
+        (ret_less, bench_less) = np.random.multivariate_normal(
+            means_less, covs_less, 1000).T
+        returns_less = pd.Series(ret_less, index=index)
+        benchmark_less = pd.Series(bench_less, index=index)
+        # Genereate more highly correlated returns
+        means_more = [mean_returns, mean_bench]
+        covs_more = [[std_returns**2, std_returns*std_bench*corr_more],
+                     [std_returns*std_bench*corr_more, std_bench**2]]
+        (ret_more, bench_more) = np.random.multivariate_normal(
+            means_more, covs_more, 1000).T
+        returns_more = pd.Series(ret_more, index=index)
+        benchmark_more = pd.Series(bench_more, index=index)
+        # Calculate alpha/beta values
+        alpha_less, beta_less = qrisk.alpha_beta(returns_less, benchmark_less)
+        alpha_more, beta_more = qrisk.alpha_beta(returns_more, benchmark_more)
+        # Alpha determines by how much returns vary from the benchmark return.
+        # A lower correlation leads to higher alpha.
+        assert alpha_less > alpha_more
+        # Beta measures the volatility of returns against benchmark returns.
+        # Beta increases proportionally to correlation.
+        assert beta_less < beta_more
 
     @parameterized.expand([
         (empty_returns, simple_benchmark, np.nan),
