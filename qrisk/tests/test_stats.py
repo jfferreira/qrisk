@@ -3,6 +3,7 @@ from __future__ import division
 from unittest import TestCase
 from nose_parameterized import parameterized
 from numpy.testing import assert_almost_equal
+import random
 
 import numpy as np
 import pandas as pd
@@ -53,6 +54,42 @@ class TestStats(TestCase):
     empty_returns = pd.Series(
         np.array([])/100,
         index=pd.date_range('2000-1-30', periods=0, freq='D'))
+
+    # Random noise
+    noise = pd.Series(
+        [random.gauss(0, 0.001) for i in range(1000)],
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+    )
+    noise_uniform = pd.Series(
+        [random.uniform(-0.01, 0.01) for i in range(1000)],
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+    )
+
+    # Random noise inv
+    inv_noise = noise.multiply(-1)
+
+    # Flat line
+    flat_line_0 = pd.Series(
+        np.linspace(0, 0, num=1000),
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+        )
+    # Flat line
+    flat_line_1 = pd.Series(
+        np.linspace(0.01, 0.01, num=1000),
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+        )
+
+    # Positive line
+    pos_line = pd.Series(
+        np.linspace(0, 1, num=1000),
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+    )
+
+    # Negative line
+    neg_line = pd.Series(
+        np.linspace(0, -1, num=1000),
+        index=pd.date_range('2000-1-30', periods=1000, freq='D')
+    )
 
     one = [-0.00171614, 0.01322056, 0.03063862, -0.01422057, -0.00489779,
            0.01268925, -0.03357711, 0.01797036]
@@ -112,12 +149,16 @@ class TestStats(TestCase):
                 DECIMAL_PLACES)
 
     @parameterized.expand([
+        (empty_returns, np.nan),
+        (one_return, 0.0),
         (simple_benchmark, 0.0),
         (mixed_returns, -0.1),
         (positive_returns, -0.0),
         (negative_returns, -0.36590730349873601),
-        (one_return, 0.0),
-        (empty_returns, np.nan)
+        (pd.Series(
+            np.array([10, -10, 10]) / 100,
+            index=pd.date_range('2000-1-30', periods=3, freq='D')),
+            -0.10)
     ])
     def test_max_drawdown(self, returns, expected):
         assert_almost_equal(
@@ -194,9 +235,11 @@ class TestStats(TestCase):
             expected,
             DECIMAL_PLACES)
 
+    # Regressive sharpe ratio tests
     @parameterized.expand([
         (empty_returns, 0.0, np.nan),
         (one_return, 0.0, np.nan),
+        (mixed_returns, mixed_returns, np.nan),
         (mixed_returns, 0.0, 1.6368951821422701),
         (mixed_returns, simple_benchmark, -1.3095161457138154),
         (positive_returns, 0.0, 52.915026221291804),
@@ -210,9 +253,69 @@ class TestStats(TestCase):
             expected,
             DECIMAL_PLACES)
 
+    # Translating the returns and required returns by the same amount
+    # should not change the sharpe ratio.
+    @parameterized.expand([
+        (noise_uniform, 0, .005),
+        (noise_uniform, 0.005, .005)
+    ])
+    def test_sharpe_translation(self, returns, required_return, translation):
+        sr = qrisk.sharpe_ratio(returns, required_return)
+        sr_depressed = qrisk.sharpe_ratio(
+            returns-translation,
+            required_return-translation)
+        sr_raised = qrisk.sharpe_ratio(
+            returns+translation,
+            required_return+translation)
+        assert_almost_equal(
+            sr,
+            sr_depressed,
+            DECIMAL_PLACES)
+        assert_almost_equal(
+            sr,
+            sr_raised,
+            DECIMAL_PLACES)
+
+    # Translating the required return inversely affects the sharpe ratio.
+    @parameterized.expand([
+        (noise_uniform, 0, .005),
+        (noise, 0, .005)
+    ])
+    def test_sharpe_translation_1(self, returns, required_return, translation):
+        sr = qrisk.sharpe_ratio(returns, required_return)
+        sr_depressed = qrisk.sharpe_ratio(
+            returns,
+            required_return-translation)
+        sr_raised = qrisk.sharpe_ratio(
+            returns,
+            required_return+translation)
+        assert sr_depressed > sr
+        assert sr > sr_raised
+
+    # Returns of a wider range or larger standard deviation decreases the
+    # sharpe ratio
+    @parameterized.expand([
+        (.001, .002),
+        (.01, .02)
+    ])
+    def test_sharpe_noise(self, small, large):
+        index = pd.date_range('2000-1-30', periods=1000, freq='D')
+        smaller_normal = pd.Series(
+            [random.gauss(.01, small) for i in range(1000)],
+            index=index
+        )
+        larger_normal = pd.Series(
+            [random.gauss(.01, large) for i in range(1000)],
+            index=index
+        )
+        assert qrisk.sharpe_ratio(smaller_normal, 0.001) > \
+            qrisk.sharpe_ratio(larger_normal, 0.001)
+
+    # Regressive downside risk tests
     @parameterized.expand([
         (empty_returns, 0.0, qrisk.DAILY, np.nan),
         (one_return, 0.0, qrisk.DAILY, 0.0),
+        (mixed_returns, mixed_returns, qrisk.DAILY, 0.0),
         (mixed_returns, 0.0, qrisk.DAILY, 0.5699122739510003),
         (mixed_returns, 0.1, qrisk.DAILY, 1.7023513150933332),
         (weekly_returns, 0.0, qrisk.WEEKLY, 0.25888650451930134),
@@ -246,9 +349,58 @@ class TestStats(TestCase):
                     expected[i],
                     DECIMAL_PLACES)
 
+    # As a higher percentage of returns are below the required return,
+    # downside risk increases.
+    @parameterized.expand([
+        (noise, flat_line_0),
+        (noise_uniform, flat_line_0)
+    ])
+    def test_downside_risk_noisy(self, noise, flat_line):
+        noisy_returns_1 = noise[0:250].add(flat_line[250:], fill_value=0)
+        noisy_returns_2 = noise[0:500].add(flat_line[500:], fill_value=0)
+        noisy_returns_3 = noise[0:750].add(flat_line[750:], fill_value=0)
+        dr_1 = qrisk.downside_risk(noisy_returns_1, flat_line)
+        dr_2 = qrisk.downside_risk(noisy_returns_2, flat_line)
+        dr_3 = qrisk.downside_risk(noisy_returns_3, flat_line)
+        assert dr_1 <= dr_2
+        assert dr_2 <= dr_3
+
+    # Downside risk increases as the required_return increases
+    @parameterized.expand([
+        (noise, .005),
+        (noise_uniform, .005)
+    ])
+    def test_downside_risk_trans(self, returns, required_return):
+        dr_0 = qrisk.downside_risk(returns, -required_return)
+        dr_1 = qrisk.downside_risk(returns, 0)
+        dr_2 = qrisk.downside_risk(returns, required_return)
+        assert dr_0 <= dr_1
+        assert dr_1 <= dr_2
+
+    # Downside risk for a random series with a required return of 0 is higher
+    # for datasets with larger standard deviation
+    @parameterized.expand([
+        (.001, .002),
+        (.001, .01),
+        (0, .001)
+    ])
+    def test_downside_risk_std(self, smaller_std, larger_std):
+        less_noise = pd.Series(
+            [random.gauss(0, smaller_std) for i in range(1000)],
+            index=pd.date_range('2000-1-30', periods=1000, freq='D')
+        )
+        more_noise = pd.Series(
+            [random.gauss(0, larger_std) for i in range(1000)],
+            index=pd.date_range('2000-1-30', periods=1000, freq='D')
+        )
+        assert qrisk.downside_risk(less_noise) < \
+            qrisk.downside_risk(more_noise)
+
+    # Regressive sortino ratio tests
     @parameterized.expand([
         (empty_returns, 0.0, qrisk.DAILY, np.nan),
         (one_return, 0.0, qrisk.DAILY, np.nan),
+        (mixed_returns, mixed_returns, qrisk.DAILY, np.nan),
         (mixed_returns, 0.0, qrisk.DAILY, 2.456518422202588),
         (mixed_returns, simple_benchmark, qrisk.DAILY, -1.7457431218879385),
         (positive_returns, 0.0, qrisk.DAILY, np.inf),
@@ -283,20 +435,120 @@ class TestStats(TestCase):
                     expected[i],
                     DECIMAL_PLACES)
 
+    # A large Sortino ratio indicates there is a low probability of a large
+    # loss, therefore randomly changing values larger than required return to a
+    # loss of 25 percent decreases the ratio.
+    @parameterized.expand([
+        (noise_uniform, 0),
+        (noise, 0),
+    ])
+    def test_sortino_add_noise(self, returns, required_return):
+        sr_1 = qrisk.sortino_ratio(returns, required_return)
+        upside_values = returns[returns > required_return].index.tolist()
+        # Add large losses at random upside locations
+        loss_loc = random.sample(upside_values, 2)
+        returns[loss_loc[0]] = -0.01
+        sr_2 = qrisk.sortino_ratio(returns, required_return)
+        returns[loss_loc[1]] = -0.01
+        sr_3 = qrisk.sortino_ratio(returns, required_return)
+        assert sr_1 > sr_2
+        assert sr_2 > sr_3
+
+    # Similarly, randomly increasing some values below the required return to
+    # the required return increases the ratio.
+    @parameterized.expand([
+        (noise_uniform, 0),
+        (noise, 0)
+    ])
+    def test_sortino_sub_noise(self, returns, required_return):
+        sr_1 = qrisk.sortino_ratio(returns, required_return)
+        downside_values = returns[returns < required_return].index.tolist()
+        # Replace some values below the required return to the required return
+        loss_loc = random.sample(downside_values, 2)
+        returns[loss_loc[0]] = required_return
+        sr_2 = qrisk.sortino_ratio(returns, required_return)
+        returns[loss_loc[1]] = required_return
+        sr_3 = qrisk.sortino_ratio(returns, required_return)
+        assert sr_1 <= sr_2
+        assert sr_2 <= sr_3
+
+    # Translating the returns and required returns by the same amount
+    # should not change the sortino ratio.
+    @parameterized.expand([
+        (noise_uniform, 0, .005),
+        (noise_uniform, 0.005, .005)
+    ])
+    def test_sortino_translation(self, returns, required_return, translation):
+        sr = qrisk.sortino_ratio(returns, required_return)
+        sr_depressed = qrisk.sortino_ratio(
+            returns-translation,
+            required_return-translation)
+        sr_raised = qrisk.sortino_ratio(
+            returns+translation,
+            required_return+translation)
+        assert_almost_equal(
+            sr,
+            sr_depressed,
+            DECIMAL_PLACES)
+        assert_almost_equal(
+            sr,
+            sr_raised,
+            DECIMAL_PLACES)
+
+    # Regressive tests for information ratio
     @parameterized.expand([
         (empty_returns, 0.0, np.nan),
         (one_return, 0.0, np.nan),
-        (positive_returns, 0.0, 3.3333333333333326),
-        (negative_returns, 0.0, -1.5374844271921471),
+        (pos_line, pos_line, np.nan),
         (mixed_returns, 0.0, 0.10311470414829102),
         (mixed_returns, simple_benchmark, -0.082491763318632769),
-        (simple_benchmark, simple_benchmark, np.nan),
     ])
     def test_information_ratio(self, returns, factor_returns, expected):
         assert_almost_equal(
             qrisk.information_ratio(returns, factor_returns),
             expected,
             DECIMAL_PLACES)
+
+    # The magnitude of the information ratio increases as a higher
+    # proportion of returns are uncorrelated with the benchmark.
+    @parameterized.expand([
+        (flat_line_0, pos_line),
+        (flat_line_1, pos_line),
+        (noise, pos_line)
+    ])
+    def test_information_ratio_noisy(self, noise_line, benchmark):
+        noisy_returns_1 = noise_line[0:250].add(benchmark[250:], fill_value=0)
+        noisy_returns_2 = noise_line[0:500].add(benchmark[500:], fill_value=0)
+        noisy_returns_3 = noise_line[0:750].add(benchmark[750:], fill_value=0)
+        ir_1 = qrisk.information_ratio(noisy_returns_1, benchmark)
+        ir_2 = qrisk.information_ratio(noisy_returns_2, benchmark)
+        ir_3 = qrisk.information_ratio(noisy_returns_3, benchmark)
+        assert abs(ir_1) < abs(ir_2)
+        assert abs(ir_2) < abs(ir_3)
+
+    # Vertical translations change the information ratio in the
+    # direction of the translation.
+    @parameterized.expand([
+        (pos_line, noise, flat_line_1),
+        (pos_line, inv_noise, flat_line_1),
+        (neg_line, noise, flat_line_1),
+        (neg_line, inv_noise, flat_line_1)
+    ])
+    def test_information_ratio_trans(self, returns, add_noise, translation):
+        ir = qrisk.information_ratio(
+            returns+add_noise,
+            returns
+        )
+        raised_ir = qrisk.information_ratio(
+            returns+add_noise+translation,
+            returns
+        )
+        depressed_ir = qrisk.information_ratio(
+            returns+add_noise-translation,
+            returns
+        )
+        assert ir < raised_ir
+        assert depressed_ir < ir
 
     @parameterized.expand([
         (empty_returns, simple_benchmark, (np.nan, np.nan)),

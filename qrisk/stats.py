@@ -415,7 +415,7 @@ def sharpe_ratio(returns, risk_free=0, period=DAILY, annualization=None):
 
     returns_risk_adj = returns - risk_free
 
-    if np.std(returns_risk_adj) == 0:
+    if np.std(returns_risk_adj, ddof=1) == 0:
         return np.nan
 
     return np.mean(returns_risk_adj) / np.std(returns_risk_adj, ddof=1) * \
