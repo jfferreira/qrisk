@@ -108,7 +108,6 @@ def cum_returns(returns, starting_value=0):
     PI((1+r_i)) - 1 = exp(ln(PI(1+r_i)))     # x = exp(ln(x))
                     = exp(SIGMA(ln(1+r_i))   # ln(a*b) = ln(a) + ln(b)
     """
-
     # df_price.pct_change() adds a nan in first position, we can use
     # that to have cum_logarithmic_returns start at the origin so that
     # df_cum.iloc[0] == starting_value
@@ -638,15 +637,12 @@ def alpha(returns, factor_returns, risk_free=0.0, period=DAILY,
     float
         Alpha.
     """
-
     if len(returns) < 2:
         return np.nan
-
-    return alpha_beta(returns,
-                      factor_returns,
-                      risk_free=risk_free,
-                      period=period,
-                      annualization=annualization)[0]
+    ann_factor = annualization_factor(period, annualization)
+    b = beta(returns, factor_returns, risk_free)
+    alpha = returns - risk_free - b*(factor_returns - risk_free)
+    return alpha.mean() * ann_factor
 
 
 def beta(returns, factor_returns, risk_free=0.0):
@@ -674,7 +670,9 @@ def beta(returns, factor_returns, risk_free=0.0):
     if len(returns) < 2:
         return np.nan
 
-    return alpha_beta(returns, factor_returns, risk_free=risk_free)[1]
+    covar = np.cov(returns-risk_free, factor_returns, ddof=0)[0][1]
+
+    return covar/np.var(factor_returns)
 
 
 def stability_of_timeseries(returns):
